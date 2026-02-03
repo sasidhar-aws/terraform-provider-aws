@@ -239,8 +239,72 @@ func (r *agentRuntimeResource) Schema(ctx context.Context, request resource.Sche
 										CustomType: fwtypes.SetOfStringType,
 										Optional:   true,
 									},
+									"allowed_scopes": schema.SetAttribute{
+										CustomType: fwtypes.SetOfStringType,
+										Optional:   true,
+									},
 									"discovery_url": schema.StringAttribute{
 										Required: true,
+									},
+								},
+								Blocks: map[string]schema.Block{
+									"custom_claims": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[customClaimValidationModel](ctx),
+										Validators: []validator.List{
+											listvalidator.SizeAtMost(10),
+										},
+										NestedObject: schema.NestedBlockObject{
+											Attributes: map[string]schema.Attribute{
+												"inbound_token_claim_name": schema.StringAttribute{
+													Required: true,
+													Validators: []validator.String{
+														stringvalidator.LengthBetween(1, 256),
+													},
+												},
+												"inbound_token_claim_value_type": schema.StringAttribute{
+													Required: true,
+													Validators: []validator.String{
+														stringvalidator.OneOf("STRING", "STRING_ARRAY"),
+													},
+												},
+											},
+											Blocks: map[string]schema.Block{
+												"authorizing_claim_match_value": schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[authorizingClaimMatchValueModel](ctx),
+													Validators: []validator.List{
+														listvalidator.IsRequired(),
+														listvalidator.SizeAtMost(1),
+													},
+													NestedObject: schema.NestedBlockObject{
+														Attributes: map[string]schema.Attribute{
+															"claim_match_operator": schema.StringAttribute{
+																Required: true,
+																Validators: []validator.String{
+																	stringvalidator.OneOf("EQUALS", "CONTAINS", "CONTAINS_ANY"),
+																},
+															},
+															"claim_match_value": schema.StringAttribute{
+																Optional: true,
+																Validators: []validator.String{
+																	stringvalidator.LengthBetween(1, 256),
+																	stringvalidator.ConflictsWith(path.MatchRelative().AtParent().AtName("claim_match_values")),
+																},
+															},
+															"claim_match_values": schema.ListAttribute{
+																CustomType:  fwtypes.ListOfStringType,
+																Optional:    true,
+																ElementType: types.StringType,
+																Validators: []validator.List{
+																	listvalidator.SizeAtLeast(1),
+																	listvalidator.ValueStringsAre(stringvalidator.LengthBetween(1, 256)),
+																	listvalidator.ConflictsWith(path.MatchRelative().AtParent().AtName("claim_match_value")),
+																},
+															},
+														},
+													},
+												},
+											},
+										},
 									},
 								},
 							},
@@ -794,10 +858,68 @@ func (m authorizerConfigurationModel) Expand(ctx context.Context) (any, diag.Dia
 }
 
 type customJWTAuthorizerConfigurationModel struct {
-	AllowedAudience fwtypes.SetOfString `tfsdk:"allowed_audience"`
-	AllowedClients  fwtypes.SetOfString `tfsdk:"allowed_clients"`
-	DiscoveryURL    types.String        `tfsdk:"discovery_url"`
+	AllowedAudience fwtypes.SetOfString                                         `tfsdk:"allowed_audience"`
+	AllowedClients  fwtypes.SetOfString                                         `tfsdk:"allowed_clients"`
+	AllowedScopes   fwtypes.SetOfString                                         `tfsdk:"allowed_scopes"`
+	CustomClaims    fwtypes.ListNestedObjectValueOf[customClaimValidationModel] `tfsdk:"custom_claims"`
+	DiscoveryURL    types.String                                                `tfsdk:"discovery_url"`
 }
+
+type customClaimValidationModel struct {
+	InboundTokenClaimName      types.String                                                     `tfsdk:"inbound_token_claim_name"`
+	InboundTokenClaimValueType types.String                                                     `tfsdk:"inbound_token_claim_value_type"`
+	AuthorizingClaimMatchValue fwtypes.ListNestedObjectValueOf[authorizingClaimMatchValueModel] `tfsdk:"authorizing_claim_match_value"`
+}
+
+type authorizingClaimMatchValueModel struct {
+	ClaimMatchOperator types.String         `tfsdk:"claim_match_operator"`
+	ClaimMatchValue    types.String         `tfsdk:"claim_match_value"`
+	ClaimMatchValues   fwtypes.ListOfString `tfsdk:"claim_match_values"`
+}
+
+// Custom Expand/Flatten needed for ClaimMatchValue union type
+// The AWS SDK ClaimMatchValue is a union that can be either a single string or array of strings
+// Similar to how CodeMemberS3, AuthorizerConfigurationMemberCustomJWTAuthorizer work in this file
+//
+// Once the exact SDK union member type names are confirmed, implement:
+// var (
+// 	_ fwflex.Expander  = authorizingClaimMatchValueModel{}
+// 	_ fwflex.Flattener = &authorizingClaimMatchValueModel{}
+// )
+//
+// Pattern based on codeConfigurationCodeModel and authorizerConfigurationModel above:
+//
+// func (m authorizingClaimMatchValueModel) Expand(ctx context.Context) (any, diag.Diagnostics) {
+// 	var diags diag.Diagnostics
+// 	switch {
+// 	case !m.ClaimMatchValue.IsNull():
+// 		// Single value - create the appropriate union member
+// 		var r awstypes.ClaimMatchValueMember{String/SingleValue}
+// 		r.Value = m.ClaimMatchValue.ValueString()
+// 		return &r, diags
+// 	case !m.ClaimMatchValues.IsNull():
+// 		// Array values - create the appropriate union member
+// 		var r awstypes.ClaimMatchValueMember{StringList/ArrayValues}
+// 		r.Value = fwflex.ExpandFrameworkStringValueList(ctx, m.ClaimMatchValues)
+// 		return &r, diags
+// 	}
+// 	return nil, diags
+// }
+//
+// func (m *authorizingClaimMatchValueModel) Flatten(ctx context.Context, v any) diag.Diagnostics {
+// 	var diags diag.Diagnostics
+// 	switch t := v.(type) {
+// 	case awstypes.ClaimMatchValueMember{String/SingleValue}:
+// 		m.ClaimMatchValue = types.StringValue(t.Value)
+// 		m.ClaimMatchValues = fwtypes.NewListValueOfNull[types.String](ctx)
+// 	case awstypes.ClaimMatchValueMember{StringList/ArrayValues}:
+// 		m.ClaimMatchValue = types.StringNull()
+// 		m.ClaimMatchValues = fwflex.FlattenFrameworkStringValueList(ctx, t.Value)
+// 	default:
+// 		diags.AddError("Unsupported Type", fmt.Sprintf("claim match value flatten: %T", v))
+// 	}
+// 	return diags
+// }
 
 type lifecycleConfigurationModel struct {
 	IdleRuntimeSessionTimeout types.Int32 `tfsdk:"idle_runtime_session_timeout"`

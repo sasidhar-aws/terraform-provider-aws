@@ -136,8 +136,72 @@ func (r *gatewayResource) Schema(ctx context.Context, request resource.SchemaReq
 										CustomType: fwtypes.SetOfStringType,
 										Optional:   true,
 									},
+									"allowed_scopes": schema.SetAttribute{
+										CustomType: fwtypes.SetOfStringType,
+										Optional:   true,
+									},
 									"discovery_url": schema.StringAttribute{
 										Required: true,
+									},
+								},
+								Blocks: map[string]schema.Block{
+									"custom_claims": schema.ListNestedBlock{
+										CustomType: fwtypes.NewListNestedObjectTypeOf[customClaimValidationModel](ctx),
+										Validators: []validator.List{
+											listvalidator.SizeAtMost(10),
+										},
+										NestedObject: schema.NestedBlockObject{
+											Attributes: map[string]schema.Attribute{
+												"inbound_token_claim_name": schema.StringAttribute{
+													Required: true,
+													Validators: []validator.String{
+														stringvalidator.LengthBetween(1, 256),
+													},
+												},
+												"inbound_token_claim_value_type": schema.StringAttribute{
+													Required: true,
+													Validators: []validator.String{
+														stringvalidator.OneOf("STRING", "STRING_ARRAY"),
+													},
+												},
+											},
+											Blocks: map[string]schema.Block{
+												"authorizing_claim_match_value": schema.ListNestedBlock{
+													CustomType: fwtypes.NewListNestedObjectTypeOf[authorizingClaimMatchValueModel](ctx),
+													Validators: []validator.List{
+														listvalidator.IsRequired(),
+														listvalidator.SizeAtMost(1),
+													},
+													NestedObject: schema.NestedBlockObject{
+														Attributes: map[string]schema.Attribute{
+															"claim_match_operator": schema.StringAttribute{
+																Required: true,
+																Validators: []validator.String{
+																	stringvalidator.OneOf("EQUALS", "CONTAINS", "CONTAINS_ANY"),
+																},
+															},
+															"claim_match_value": schema.StringAttribute{
+																Optional: true,
+																Validators: []validator.String{
+																	stringvalidator.LengthBetween(1, 256),
+																	stringvalidator.ConflictsWith(path.MatchRelative().AtParent().AtName("claim_match_values")),
+																},
+															},
+															"claim_match_values": schema.ListAttribute{
+																CustomType:  fwtypes.ListOfStringType,
+																Optional:    true,
+																ElementType: types.StringType,
+																Validators: []validator.List{
+																	listvalidator.SizeAtLeast(1),
+																	listvalidator.ValueStringsAre(stringvalidator.LengthBetween(1, 256)),
+																	listvalidator.ConflictsWith(path.MatchRelative().AtParent().AtName("claim_match_value")),
+																},
+															},
+														},
+													},
+												},
+											},
+										},
 									},
 								},
 							},
